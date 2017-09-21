@@ -43,8 +43,8 @@ class POSModel:
         T = len(string_tokens)
         N = len(states)
 
-        viterbi = np.zeros((N + 2, T))
-        backpointer = np.zeros((N + 2, T))
+        viterbi = np.zeros((N + 3, T + 1))
+        backpointer = np.zeros((N + 3, T + 1))
 
         for index, word in enumerate(string_tokens):
             if word not in word_vocab:
@@ -53,46 +53,61 @@ class POSModel:
         safe_mul = lambda x, y: np.exp(np.log(x) + np.log(y))
 
         for index, state in enumerate(states, 1):
-            viterbi[index, 0] = safe_mul(tag_transition_prob[(start_of_string_state, state)],
-                                         emission_prob[(state, string_tokens[0])])
-            backpointer[index, 0] = index
+            tag_trans = tag_transition_prob[(start_of_string_state, state)]
+            emission = emission_prob[(state, string_tokens[0])]
+            viterbi[index, 1] = safe_mul(tag_trans, emission)
+            backpointer[index, 1] = 0
 
-        for o_i, o in enumerate(string_tokens[1:], 1):
+        for o_i, o in enumerate(string_tokens[1:], 2):
             for s_i, s in enumerate(states, 1):
 
                 for _s_i, _s in enumerate(states, 1):
-
-                    temp = safe_mul(viterbi[_s_i, o_i - 1], tag_transition_prob[(_s, s)])
-
+                    prev = viterbi[_s_i, o_i - 1]
+                    tag_trans = tag_transition_prob[(_s, s)]
+                    temp = safe_mul(prev, tag_trans)
                     if temp > viterbi[s_i, o_i]:
                         viterbi[s_i, o_i] = temp
                         backpointer[s_i, o_i] = _s_i
-
-                viterbi[s_i, o_i] = safe_mul(viterbi[s_i, o_i], emission_prob[(s, o)])
+                emission = emission_prob[(s, o)]
+                viterbi[s_i, o_i] = safe_mul(viterbi[s_i, o_i], emission)
 
         for s_i, s in enumerate(states, 1):
 
-            temp = safe_mul(viterbi[s_i, T - 1], tag_transition_prob[(s, '.')])
+            tag_trans = tag_transition_prob[(s, end_of_string_state)]
+            temp = safe_mul(viterbi[s_i, T], tag_trans)
 
-            if temp > viterbi[N + 1, T - 1]:
-                viterbi[N + 1, T - 1] = temp
-                backpointer[N + 1, T - 1] = s_i
+            if temp > viterbi[N + 1, T]:
+                viterbi[N + 1, T] = temp
+                backpointer[N + 1, T] = s_i
 
-        ans = [end_of_string_state, ]
+        ans = list(np.zeros((len(string_tokens) + 1,)))
 
-        s_i = N + 1
-        t_i = T - 1
+        z_i = int(backpointer[N + 1, T])
+        ans[T] = states[z_i - 1]
 
-        while True:
-            b_i = int(backpointer[s_i, t_i])
-            if t_i == -1:
-                break
+        for index in xrange(T, 1, -1):
+            z_i = int(backpointer[z_i, index])
+            ans[index - 1] = states[z_i - 1]
 
-            ans.append(states[b_i - 1])
-            s_i = b_i
-            t_i = t_i - 1
+        ans = ans[1:]
+        ans.append(end_of_string_state)
+        return ans
 
-        return ans[::-1]
+        # ans = [end_of_string_state, ]
+        #
+        # s_i = N + 1
+        # t_i = T - 1
+        #
+        # while True:
+        #     b_i = int(backpointer[s_i, t_i])
+        #     if t_i == -1:
+        #         break
+        #
+        #     ans.append(states[b_i - 1])
+        #     s_i = b_i
+        #     t_i = t_i - 1
+        #
+        # return ans[::-1]
 
     # @staticmethod
     # def _explode_column(df, column_to_explode, result_cols):
