@@ -106,11 +106,11 @@ class POSModel:
         df[sentence_col] = df[sentence_col]. \
             apply(lambda x: '0\t' + start_of_string_state + '\t' + start_of_string_state + '\n' + x)
 
-        # np.random.seed(12345)
-        # msk = np.random.rand(len(df)) < self.train_dev_split
+        np.random.seed(12345)
+        msk = np.random.rand(len(df)) < self.train_dev_split
 
-        msk = np.zeros(df.shape[0], dtype=bool)
-        msk[:int(df.shape[0] * self.train_dev_split)] = True
+        # msk = np.zeros(df.shape[0], dtype=bool)
+        # msk[:int(df.shape[0] * self.train_dev_split)] = True
 
         self.train_df_raw_sentence = df[msk]
         self.dev_df_raw_sentence = df[~msk]
@@ -127,7 +127,7 @@ class POSModel:
                        word_tag_col + '1',
                        word_pos_col + '2',
                        word_col + '2',
-                       word_tag_col + '2', ]
+                       word_tag_col + '2']
 
         self.train_df_comb = dict()
         self.train_df_comb[bi_tag_gram_col] = pd.Series(list(zip(new[word_tag_col + '1'], new[word_tag_col + '2'])))
@@ -153,9 +153,9 @@ class POSModel:
 
         # Choosing vocabulary as tokens with count greater than 1
         self.train_word_vocab = self.train_df_col \
-            .groupby(word_col).filter(lambda x: x[word_col].count() > 1)[word_col].unique()
+            .groupby(word_col).filter(lambda x: x[word_col].count() > unknown_word_count)[word_col].unique()
 
-        # Removing '.' and '<s>' from the train_word_vocab
+        # Removing '.', '<s>' from the train_word_vocab
         mask = (self.train_word_vocab == end_of_string_state) | (self.train_word_vocab == start_of_string_state)
         self.train_word_vocab = self.train_word_vocab[~mask]
         self.train_word_vocab = np.append(self.train_word_vocab, unknown_word)
@@ -175,6 +175,8 @@ class POSModel:
         mask = (self.train_state_vocab == end_of_string_state) | (self.train_state_vocab == start_of_string_state)
         self.train_state_vocab = self.train_state_vocab[~mask]
         self.train_state_vocab.sort()
+
+        assert len(self.train_state_vocab) == total_number_of_tags
 
     @staticmethod
     def process_raw_to_col(df):
@@ -201,8 +203,7 @@ class POSModel:
                 agg(lambda x: x.value_counts().index[0])
 
             # Removing start of the string state and end of the string state from baseline_model
-            mask = (self.baseline_model == end_of_string_state) | \
-                   (self.baseline_model == start_of_string_state)
+            mask = (self.baseline_model == start_of_string_state) | (self.baseline_model == end_of_string_state)
 
             self.baseline_model = self.baseline_model[~mask]
 
@@ -296,10 +297,10 @@ class POSModel:
             self.prob_tag_transition_dict = {}
             for key, val in self._get_train_bi_tag_count_dict().items():
 
-                if self.smoothing == 'LP':
+                if self.smoothing == 'laplace':
                     self.prob_tag_transition_dict[key] = \
-                        (val + 1.0) / (self.get_uni_tag_count(key[0]) + total_number_of_tags + 2)
-                if self.smoothing == 'lambda':
+                        (val + 1.0) / (self.get_uni_tag_count(key[0]) + total_number_of_tags + 1)
+                elif self.smoothing == 'lambda':
                     temp = val * 1.0 / self.get_uni_tag_count(key[0])
                     self.prob_tag_transition_dict[key] = self._lambda * temp + (1.0 - self._lambda) * 1.0 / len(
                         self.train_state_vocab)

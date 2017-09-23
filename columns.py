@@ -22,3 +22,4 @@ count_predict_match_col = 'count_predict_match_count'
 count_dev_tag_col = 'count_dev_tag'
 
 total_number_of_tags = 35
+unknown_word_count = 1
