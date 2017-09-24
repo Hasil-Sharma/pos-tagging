@@ -2,6 +2,9 @@ from itertools import product
 
 import pandas as pd
 from StringIO import StringIO
+
+from collections import defaultdict
+
 from columns import *
 import numpy as np
 
@@ -67,10 +70,7 @@ class POSModel:
         ans.append(end_of_string_state)
         return ans
 
-    def __init__(self, **kwargs):
-        self.train_dev_split = kwargs.pop('train_dev_split', 0.8)
-        self.smoothing = kwargs.pop('smoothing', None)
-        self._lambda = kwargs.pop('_lambda', None)
+    def _reset(self):
 
         self.train_df_col = None
         self.train_df_comb = None
@@ -98,22 +98,39 @@ class POSModel:
         self.baseline_accuracy = None
         self.predict_accuracy = None
 
-    def read(self, file_name):
+    def __init__(self, **kwargs):
+        self.train_dev_split = kwargs.pop('train_dev_split', 0.8)
+        self.smoothing = kwargs.pop('smoothing', None)
+        self._lambda = kwargs.pop('_lambda', None)
+        self.d_kn = kwargs.pop('d_kn', 0.75)
 
-        text = open(file_name).read()
-        lines = text.split('\n\n')
-        df = pd.DataFrame(lines, columns=[sentence_col, ])
-        df[sentence_col] = df[sentence_col]. \
-            apply(lambda x: '0\t' + start_of_string_state + '\t' + start_of_string_state + '\n' + x)
+        self.train_df_col = None
+        self.train_df_comb = None
+        self.train_df_raw_sentence = None
+        self.dev_df_raw_sentence = None
+        self.dev_df_col = None
 
-        np.random.seed(12345)
-        msk = np.random.rand(len(df)) < self.train_dev_split
+        self.baseline_model = None
 
-        # msk = np.zeros(df.shape[0], dtype=bool)
-        # msk[:int(df.shape[0] * self.train_dev_split)] = True
+        self.train_word_vocab = None
+        self.train_state_vocab = None
+        self.train_uni_word_vocab = None
 
-        self.train_df_raw_sentence = df[msk]
-        self.dev_df_raw_sentence = df[~msk]
+        self.uni_tag_count_dict = None
+        self.bi_tag_count_dict = None
+        self.tag_and_word_count_dict = None
+
+        self.train_uni_tag_count_dict = None
+        self.train_bi_tag_count_dict = None
+        self.train_tag_and_word_count_dict = None
+
+        self.prob_tag_transition_dict = None
+        self.prob_emission_dict = None
+
+        self.baseline_accuracy = None
+        self.predict_accuracy = None
+
+    def read(self):
 
         self.train_df_col = self._process_train_raw_sentences_to_col()
         self.dev_df_col = self._process_dev_raw_sentences_to_col()
@@ -288,6 +305,59 @@ class POSModel:
     def get_train_tag_and_word_count(self, tag, word):
         return self._get_train_tag_and_word_count_dict()[(tag, word)]
 
+    def _get_kn_smoothing_tag_trans(self):
+        if not self.train_bi_tag_count_dict:
+            self._get_train_bi_tag_count_dict()
+
+        train_bi_tag_count_dict = self._get_train_bi_tag_count_dict()
+
+        train_bi_tag_count_df = pd.DataFrame.from_dict(train_bi_tag_count_dict.items())
+        train_bi_tag_count_df.columns = ['tag1_tag2', 'count']
+
+        train_bi_tag_count_df['tag1'] = train_bi_tag_count_df['tag1_tag2'].apply(lambda x: x[0])
+        train_bi_tag_count_df['tag2'] = train_bi_tag_count_df['tag1_tag2'].apply(lambda x: x[1])
+
+        train_state_vocab = list(self.train_state_vocab[:])
+        train_state_vocab.append(end_of_string_state)
+
+        prob_cont_df = pd.DataFrame(train_state_vocab, columns=['tag', ])
+
+        # Count of all the bigrams where prob_cont_df.tag has non-zero count as second tag
+        prob_cont_df['value'] = prob_cont_df['tag'].apply(lambda x: train_bi_tag_count_df[
+                                                                        (train_bi_tag_count_df['tag2'] == x) & (
+                                                                            train_bi_tag_count_df['count'] > 0)]
+                                                          .shape[0] /
+                                                                    (1.0 *
+                                                                     len(self.bi_tag_count_dict))
+                                                          )
+        prob_cont_df = prob_cont_df.set_index(prob_cont_df['tag'], drop=True)
+        train_state_vocab = list(self.train_state_vocab[:])
+        train_state_vocab.append(start_of_string_state)
+        d = self.d_kn
+        lambda_df = pd.DataFrame(train_state_vocab, columns=['tag'])
+        lambda_df['value'] = lambda_df['tag'].apply(
+            lambda x: d * train_bi_tag_count_df[
+                (train_bi_tag_count_df['tag1'] == x) & (train_bi_tag_count_df['count'] > 0)].shape[0] /
+                      train_bi_tag_count_df[train_bi_tag_count_df['tag1'] == x]['count'].sum()
+        )
+        lambda_df = lambda_df.set_index(lambda_df['tag'], drop=True)
+
+        prob_tag_transition_df = train_bi_tag_count_df[['tag1', 'tag2']]
+
+        prob_tag_transition_df['value'] = prob_tag_transition_df[['tag1', 'tag2']].apply(
+            lambda x: max(1.0 * (train_bi_tag_count_dict[(x[0], x[1])] - d), 0) / self.get_uni_tag_count(x[0]) +
+                      lambda_df.ix[
+                          x[0]].value *
+                      prob_cont_df.ix[
+                          x[1]].value,
+            axis=1)
+
+        prob_tag_transition_df['tag1_tag2'] = prob_tag_transition_df[['tag1', 'tag2']].apply(lambda x: (x[0], x[1]),
+                                                                                             axis=1)
+        prob_tag_transition_df.set_index('tag1_tag2', inplace=True)
+
+        return prob_tag_transition_df['value'].to_dict()
+
     def _get_prob_tag_transition_dict(self):
 
         if not self.train_bi_tag_count_dict:
@@ -295,23 +365,27 @@ class POSModel:
 
         if not self.prob_tag_transition_dict:
             self.prob_tag_transition_dict = {}
-            for key, val in self._get_train_bi_tag_count_dict().items():
-
-                if self.smoothing == 'laplace':
-                    self.prob_tag_transition_dict[key] = \
-                        (val + 1.0) / (self.get_uni_tag_count(key[0]) + total_number_of_tags + 1)
-                elif self.smoothing == 'lambda':
-                    temp = val * 1.0 / self.get_uni_tag_count(key[0])
-                    self.prob_tag_transition_dict[key] = self._lambda * temp + (1.0 - self._lambda) * 1.0 / len(
-                        self.train_state_vocab)
-                else:
-                    self.prob_tag_transition_dict[key] = \
-                        val * 1.0 / self.get_uni_tag_count(key[0])
+            if self.smoothing == 'kn':
+                self.prob_tag_transition_dict = self._get_kn_smoothing_tag_trans()
+            else:
+                for key, val in self._get_train_bi_tag_count_dict().items():
+                    if self.smoothing == 'laplace':
+                        self.prob_tag_transition_dict[key] = \
+                            (val + 1.0) / (self.get_uni_tag_count(key[0]) + total_number_of_tags + 1)
+                    elif self.smoothing == 'lambda':
+                        temp = val * 1.0 / self.get_uni_tag_count(key[0])
+                        self.prob_tag_transition_dict[key] = self._lambda * temp + (1.0 - self._lambda) * 1.0 / len(
+                            self.train_state_vocab)
+                    else:
+                        self.prob_tag_transition_dict[key] = val * 1.0 / self.get_uni_tag_count(key[0])
 
         return self.prob_tag_transition_dict
 
     def get_prob_tag_transition(self, tag1, tag2):
         return self._get_prob_tag_transition_dict()[(tag1, tag2)]
+
+    def _get_kn_smoothing_emission(self):
+        pass
 
     def _get_prob_emission_dict(self):
 
@@ -321,6 +395,10 @@ class POSModel:
         if not self.prob_emission_dict:
             self.prob_emission_dict = {}
             for key, val in self._get_train_tag_and_word_count_dict().items():
+                # if self.smoothing:
+                #     self.prob_emission_dict[key] = \
+                #         (val + 1.0) / (self.get_uni_tag_count(key[0]) + len(self.train_word_vocab))
+                # else:
                 self.prob_emission_dict[key] = \
                     val * 1.0 / self.get_uni_tag_count(key[0])
 
@@ -334,12 +412,45 @@ class POSModel:
     def _get_accuracy(self, count1, count2):
         return count1 * 1.0 / count2
 
-    def train(self, n=100):
+    def k_fold_testing(self, k, file_name):
+        text = open(file_name).read()
+        lines = text.split('\n\n')
+        df = pd.DataFrame(lines, columns=[sentence_col, ])
+        df[sentence_col] = df[sentence_col]. \
+            apply(lambda x: '0\t' + start_of_string_state + '\t' + start_of_string_state + '\n' + x)
+
+        np.random.seed(12345)
+        df.apply(np.random.shuffle, axis=0)
+
+        count = df.shape[0]
+        test_count = int(count * 1.0 / k) + 1
+        accuracy_list = []
+        for i in xrange(k):
+            print "\nFor Fold %s as dev " % i
+            mask = np.zeros(count, dtype=bool)
+            if i == k - 1:
+                mask[i * test_count:] = True
+            else:
+                mask[i * test_count: (i + 1) * test_count] = True
+
+            self.train_df_raw_sentence = df[~mask]
+            self.dev_df_raw_sentence = df[mask]
+
+            print "Train : ", self.train_df_raw_sentence.shape[0]
+            print "Dev : ", self.dev_df_raw_sentence.shape[0]
+
+            self.read()
+            self.train()
+            accuracy_list.append(self.predict_accuracy)
+            self._reset()
+
+        return accuracy_list
+
+    def train(self):
         self._get_prob_tag_transition_dict()
         self._get_prob_emission_dict()
 
-        df = self.dev_df_raw_sentence.drop_duplicates()
-        df = df.head(n)
+        df = self.dev_df_raw_sentence
 
         df[dev_string_token_col] = df[sentence_col] \
             .apply(lambda x: [y.split('\t')[1] for y in x.strip().split('\n')][1:-1])
@@ -364,10 +475,8 @@ class POSModel:
         self.baseline_accuracy = self._get_accuracy(df[count_freq_match_col].sum(), df[count_dev_tag_col].sum())
         self.predict_accuracy = self._get_accuracy(df[count_predict_match_col].sum(), df[count_dev_tag_col].sum())
 
-        print "n: ", n
         print "Baseline accuracy: ", self.baseline_accuracy
         print "HMM accuracy: ", self.predict_accuracy
-        return df
 
     def freq_model_predict(self, string_tokens):
 
