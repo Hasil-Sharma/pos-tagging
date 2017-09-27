@@ -1,5 +1,5 @@
 start_of_string_state = '<s>'
-end_of_string_state = '.'
+end_of_string_state = '</s>'
 unknown_word = "#UNKW#"
 
 sentence_col = 'sentence'
@@ -21,5 +21,5 @@ count_freq_match_col = 'count_freq_match'
 count_predict_match_col = 'count_predict_match_count'
 count_dev_tag_col = 'count_dev_tag'
 
-total_number_of_tags = 35
+total_number_of_tags = 36
 unknown_word_count = 1

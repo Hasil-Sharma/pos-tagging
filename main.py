@@ -1,4 +1,5 @@
 from Model import POSModel
-model = POSModel()
-model.read(file_name='./berp-POS-training.txt')
-model.train(1000)
+d = 0.80
+print "\nKN Smoothing", d
+model = POSModel(smoothing = 'kn', d_kn = d)
+model.predict_on_test(train_file_name='./berp-POS-training.txt', test_file_name='./assgn2-test-set.txt')
